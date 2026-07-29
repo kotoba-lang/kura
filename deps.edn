@@ -1,0 +1,32 @@
+{:paths ["src"]
+ :version "0.1.0"
+ ;; Two runtime deps, both reuse rather than reinvention:
+ ;;   erasure    — the code itself; repair asks it what is recoverable and
+ ;;                what to read, and never re-derives either.
+ ;;   merkle-sum — the audit tree and the settlement tree. A sum tree is the
+ ;;                right shape for both (leaf sums are bytes held / bytes
+ ;;                owed), and this workspace already has an audited one.
+ :deps {io.github.kotoba-lang/erasure
+        {:git/url "https://github.com/kotoba-lang/erasure.git"
+         :git/sha "6b6b95eb8f5733b468e569c59eb58b492e6dc08b"}
+        io.github.kotoba-lang/merkle-sum
+        {:git/url "https://github.com/kotoba-lang/merkle-sum.git"
+         :git/sha "5bb473aed0c0bba6c0ae758d000a6142a5d79891"}}
+ :aliases
+ {:test {:extra-paths ["test"]
+         ;; kotoba-lang/compiler is TEST-ONLY, for the parity gate over
+         ;; kotoba/kura_core.kotoba (ADR-2607299200 section 5).
+         :extra-deps {io.github.cognitect-labs/test-runner
+                      {:git/tag "v0.5.1" :git/sha "dfb30dd"}
+                      io.github.kotoba-lang/compiler
+                      {:git/url "https://github.com/kotoba-lang/compiler.git"
+                       :git/sha "45f0e5e3d633e3fc9d8003396f64422b7566e02b"}}
+         :main-opts ["-m" "cognitect.test-runner"]
+         :exec-fn cognitect.test-runner.api/test}
+  ;; The portable suite under ClojureScript. The parity gate is JVM-only.
+  ;;   clojure -M:cljs -m cljs.main --target node -m kura.cljs-runner
+  :cljs {:extra-paths ["test"]
+         :extra-deps {org.clojure/clojurescript {:mvn/version "1.11.132"}}}
+  :lint {:replace-deps {clj-kondo/clj-kondo {:mvn/version "2024.11.14"}}
+         :main-opts ["-m" "clj-kondo.main" "--lint" "src" "test"
+                     "--fail-level" "error"]}}}

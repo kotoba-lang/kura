@@ -1,0 +1,103 @@
+(ns kura.repair-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [erasure.lrc :as lrc]
+            [kura.placement :as p]
+            [kura.repair :as r]))
+
+(def layout (lrc/layout {:k 16 :r 4 :g 6}))
+(def pol (r/policy {:grace-seconds 900 :repair-threshold 3}))
+
+(defn- states
+  "Shard states: `lost` are gone, `unreachable` went away `ago` seconds back."
+  ([lost] (states lost #{} 0 0))
+  ([lost unreachable ago now]
+   (into {} (map (fn [i]
+                   [i (cond
+                        (lost i) {:state :lost}
+                        (unreachable i) {:state :unreachable
+                                         :unreachable-since (- now ago)}
+                        :else {:state :live})]))
+         (range (:n layout)))))
+
+(deftest grace-period-defers-repair
+  (testing "a node that vanished 60s ago has usually not lost anything —
+            repairing on first miss turns a rolling restart into a rebuild"
+    (let [fresh (r/assess layout pol 10000 (states #{} #{5} 60 10000))]
+      (is (empty? (:erased fresh)) "inside grace: degraded, not erased")
+      (is (= #{5} (set (:degraded fresh))))
+      (is (:readable? fresh))
+      (is (:readable-now? fresh) "and still readable around it"))
+    (let [stale (r/assess layout pol 10000 (states #{} #{5} 1200 10000))]
+      (is (= #{5} (set (:erased stale))) "past grace: now a repair")
+      (is (empty? (:degraded stale))))))
+
+(deftest degraded-shards-count-against-reading-now
+  (testing "a read that has to wait out a grace period is not a read that
+            succeeded, so readable-now? is stricter than readable?"
+    (let [a (r/assess layout pol 10000
+                      (states #{0 1 2 3 4 5 6} #{7 8 9 10 11 12 13 14 15} 60 10000))]
+      (is (:readable? a) "7 real losses are inside the code")
+      (is (false? (:readable-now? a)) "but 16 unavailable shards are not"))))
+
+(deftest margin-is-the-guaranteed-bound
+  (testing "scheduling uses the bound, not the optimistic per-pattern figure"
+    (is (= 7 (r/margin layout #{})))
+    (is (= 6 (r/margin layout #{3})))
+    (is (= 0 (r/margin layout #{0 1 2 3 4 5 6})))
+    (is (= 0 (r/margin layout #{0 1 2 3 4 5 6 7})) "floored, never negative")))
+
+(deftest exact-margin-can-exceed-the-bound
+  (testing "erasure measured 1,464 of 1,562,275 eight-shard patterns as fatal,
+            so most patterns survive more than the guarantee — which is
+            exactly why the scheduler must not bet on it"
+    (let [erased #{0 4 8 12}]
+      (is (= 3 (r/margin layout erased)))
+      (is (>= (r/exact-margin layout erased 3) 3)
+          "this spread-out pattern really does survive at least the bound"))))
+
+(deftest queue-orders-by-danger-then-cheapness
+  (let [assessments
+        {:healthy (r/assess layout pol 0 (states #{}))
+         :one-gone (r/assess layout pol 0 (states #{5}))
+         :six-gone (r/assess layout pol 0 (states #{0 1 2 3 4 5}))
+         :dead (r/assess layout pol 0 (states #{0 1 2 3 4 5 6 7}))}
+        q (r/queue layout pol assessments)
+        groups (mapv :group q)]
+    (testing "healthy groups are not queued at all"
+      (is (not (some #{:healthy} groups))))
+    (testing "a single loss has margin 6, above the threshold of 3, so it waits"
+      (is (not (some #{:one-gone} groups))))
+    (testing "unreadable first"
+      (is (= :dead (first groups))))
+    (is (some #{:six-gone} groups))))
+
+(deftest parallelism-is-capped
+  (let [tight (r/policy {:repair-threshold 7 :parallel-repairs 2})
+        assessments (into {} (map (fn [i] [i (r/assess layout tight 0 (states #{i}))]))
+                          (range 10))]
+    (is (= 2 (count (r/queue layout tight assessments))))))
+
+(deftest read-sources-map-shards-to-nodes
+  (let [nodes (vec (for [i (range 40)]
+                     (p/node {:id (str "n-" i) :domains {:rack (str "rack-" (mod i 8))}})))
+        sel (p/select "pg-1" nodes 26 (p/policy {:caps {:rack 4}}))
+        shard->node (p/assign sel)
+        plan (lrc/recovery-plan layout #{7})
+        sources (r/read-sources plan shard->node)]
+    (is (= 4 (count sources)) "single loss, r=4 reads")
+    (is (= (set (:reads plan)) (set (keys sources))))
+    (is (every? string? (vals sources)))
+    (is (not (contains? sources 7)) "never reads the shard being rebuilt")))
+
+(deftest policy-headroom-tells-the-truth-about-caps
+  (let [h (r/policy-headroom layout (p/policy {:caps {:rack 4 :operator 7 :region 12}}))]
+    (is (true? (get-in h [:rack :survivable?])) "4 <= 7 tolerated")
+    (is (= 3 (get-in h [:rack :margin-after-domain-loss])))
+    (testing "a cap equal to tolerance survives with zero margin"
+      (is (true? (get-in h [:operator :survivable?])))
+      (is (= 0 (get-in h [:operator :margin-after-domain-loss]))))
+    (testing "a cap above tolerance means one region can take the object out —
+              precisely the correlated failure section 1's multiplier assumes
+              away, so it must be reported, not silently accepted"
+      (is (false? (get-in h [:region :survivable?])))
+      (is (neg? (get-in h [:region :margin-after-domain-loss]))))))

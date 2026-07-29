@@ -1,0 +1,111 @@
+(ns kura.audit-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [kura.audit :as a]))
+
+;; A toy digest. Real deployments inject SHA-256; the tree does not care, and
+;; keeping the test host-free is worth more here than exercising a real hash.
+(defn- toy-hash [s]
+  (str "h" (Math/abs (hash s))))
+
+(deftest sample-count-is-the-formula-in-the-adr
+  (testing "ADR-2607299200 section 2's headline number"
+    (is (= 688 (a/samples-needed 0.01 0.001))
+        "1% deletion caught with probability 0.999 in 688 challenges"))
+  (testing "and it does not depend on how much the node stores — the property
+            that makes per-node audit cost flat as the network grows"
+    (is (= (a/samples-needed 0.01 0.001) (a/samples-needed 0.01 0.001))))
+  (testing "smaller deletions cost proportionally more"
+    (is (> (a/samples-needed 0.001 0.001) (a/samples-needed 0.01 0.001)))
+    (is (< (a/samples-needed 0.1 0.001) (a/samples-needed 0.01 0.001)))))
+
+(deftest audit-volume-matches-the-adr-arithmetic
+  (testing "688 challenges x 64 KiB leaves, monthly, against a 10 TB node"
+    (let [q (a/samples-needed 0.01 0.001)
+          per-round (* q 64 1024)
+          yearly (* 12 per-round)
+          capacity (* 10 1024 1024 1024 1024)]
+      (is (< 40000000 per-round 50000000) "~44 MiB per round")
+      (is (< (/ (double yearly) capacity) 0.0001)
+          "under 0.01% of capacity per year, versus 1200% for a monthly scrub"))))
+
+(deftest detection-probability-is-reported-honestly
+  (is (< 0.998 (a/detection-probability 688 0.01) 1.0))
+  (testing "a short run is worth little and must say so"
+    (is (< (a/detection-probability 10 0.01) 0.11))))
+
+(deftest challenges-are-deterministic-and-third-party-checkable
+  (let [args ["seed-epoch-7" "node-3" 7]]
+    (is (= (apply a/challenge-set (concat args [50 1000]))
+           (apply a/challenge-set (concat args [50 1000])))
+        "any auditor recomputes the same set")
+    (is (= 50 (count (apply a/challenge-set (concat args [50 1000])))))
+    (is (apply distinct? (apply a/challenge-set (concat args [50 1000])))
+        "no leaf is asked twice")))
+
+(deftest challenges-differ-per-node-and-per-epoch
+  (let [a1 (a/challenge-set "seed-1" "node-a" 1 30 1000)
+        a2 (a/challenge-set "seed-1" "node-b" 1 30 1000)
+        a3 (a/challenge-set "seed-2" "node-a" 1 30 1000)
+        a4 (a/challenge-set "seed-1" "node-a" 2 30 1000)]
+    (is (not= a1 a2) "two nodes are not asked the same questions")
+    (is (not= a1 a3) "a new seed asks new questions")
+    (is (not= a1 a4) "a new epoch asks new questions")))
+
+(deftest challenge-set-degrades-gracefully-on-tiny-trees
+  (testing "asking for more distinct leaves than exist must terminate"
+    (is (= 5 (count (a/challenge-set "s" "n" 1 50 5))))))
+
+(deftest tree-commits-to-total-volume
+  (testing "the sum tree's point: the root asserts how much the node holds,
+            and it cannot be understated without contradicting a leaf proof"
+    (let [leaves (mapv #(a/leaf (str "shard-" %) (toy-hash (str "body-" %)) 4096)
+                       (range 64))
+          tree (a/commit toy-hash leaves)]
+      (is (= (* 64 4096) (a/claimed-bytes tree)))
+      (is (some? (get-in tree [:root :hash]))))))
+
+(deftest honest-node-passes-and-liar-fails
+  (let [leaves (mapv #(a/leaf (str "shard-" %) (toy-hash (str "body-" %)) 4096)
+                     (range 64))
+        tree (a/commit toy-hash leaves)
+        root (:root tree)
+        challenges (a/challenge-set "seed-9" "node-x" 9 20 64)]
+    (testing "an honest node answers every challenge from its real tree"
+      (let [responses (mapv #(a/respond tree %) challenges)
+            v (a/verdict toy-hash root responses {:f 0.01})]
+        (is (:pass? v))
+        (is (= 20 (:answered v)))
+        (is (empty? (:failed v)))))
+
+    (testing "a node that fabricates a leaf fails that challenge"
+      (let [responses (mapv #(a/respond tree %) challenges)
+            tampered (assoc-in (vec responses) [3 :leaf :hash] (toy-hash "forged"))
+            v (a/verdict toy-hash root tampered {:f 0.01})]
+        (is (false? (:pass? v)))
+        (is (= #{3} (set (:failed v))))))
+
+    (testing "a node that inflates a leaf's byte count fails — the sum is
+              committed, so padding the invoice contradicts the root"
+      (let [responses (mapv #(a/respond tree %) challenges)
+            inflated (assoc-in (vec responses) [0 :leaf :sum] 999999)
+            v (a/verdict toy-hash root inflated {:f 0.01})]
+        (is (false? (:pass? v)))
+        (is (= #{0} (set (:failed v))))))
+
+    (testing "a node that declines a challenge fails it — choosing which
+              questions to answer is not being audited"
+      (let [responses (assoc (mapv #(a/respond tree %) challenges) 5 nil)
+            v (a/verdict toy-hash root responses {:f 0.01})]
+        (is (false? (:pass? v)))
+        (is (= #{5} (set (:failed v))))
+        (is (= 19 (:answered v)))))))
+
+(deftest verdict-reports-what-the-run-was-actually-worth
+  (let [leaves (mapv #(a/leaf (str "s-" %) (toy-hash (str %)) 1024) (range 32))
+        tree (a/commit toy-hash leaves)
+        short-run (mapv #(a/respond tree %) (a/challenge-set "s" "n" 1 3 32))
+        v (a/verdict toy-hash (:root tree) short-run {:f 0.01})]
+    (is (:pass? v))
+    (is (< (:detection-probability v) 0.05)
+        "a 3-challenge pass is not a clean bill of health, and the verdict
+         says so rather than leaving the reader to assume")))

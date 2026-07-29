@@ -1,0 +1,101 @@
+(ns kura-core
+  (:export [u32 mul32 mix32 fnv-step fnv1a-of-3 key-of-3
+            virtual-key rendezvous-score best-score
+            group-of samples-lower-bound]))
+
+;; The `.kotoba` port of the part of kura that MUST be reproducible by every
+;; implementation: placement arithmetic (ADR-2607299200 sections 3 and 5).
+;;
+;; Everything else in the library takes its crypto by injection. Placement
+;; cannot — a client, a coordinator and an auditor have to compute the SAME
+;; node set for a group or the network has no shared notion of where anything
+;; is. So the hash is pinned, in 32-bit arithmetic, and this file is the
+;; second independent implementation that `kura.kotoba-parity-test` holds the
+;; first one to.
+;;
+;; 32-bit rather than 64-bit is forced: the compile path has
+;; `i32-wrapping-mul` but no wrapping 64-bit multiply, so a 64-bit mixer would
+;; trap on overflow. It is ample here — this is a dispersion function, not a
+;; security primitive. Node identity and audit challenges are signed and
+;; seeded elsewhere.
+;;
+;; No capabilities: integers in, integers out, kotoba/pure throughout.
+
+;; --- 32-bit primitives ----------------------------------------------------
+
+(defn u32 [x :i64] :i64
+  (u32-wrap x))
+
+(defn mul32 [a :i64 b :i64] :i64
+  (u32-wrap (i32-wrapping-mul a b)))
+
+(defn mix32 [x :i64] :i64
+  ;; murmur3's 32-bit finalizer. Shift counts are literals because this
+  ;; profile restricts i32 shifts to a literal amount in [0,31] — which is
+  ;; exactly what a fixed avalanche needs, so the restriction costs nothing.
+  (let [a (u32-wrap x)
+        b (u32-wrap (i32-xor a (u32-shift-right a 16)))
+        c (mul32 b 2246822507)
+        d (u32-wrap (i32-xor c (u32-shift-right c 13)))
+        e (mul32 d 3266489909)]
+    (u32-wrap (i32-xor e (u32-shift-right e 16)))))
+
+;; --- FNV-1a ---------------------------------------------------------------
+;; Identifiers are ASCII by contract (kura.hash/ascii? enforces it on the
+;; .cljc side), so a code point IS a byte and the two implementations hash the
+;; same octets. Fixed-length helpers rather than a string walk: this profile
+;; caps a function at 5 parameters and the loop would need the string, its
+;; length, the index and the accumulator plus the captured bounds. The .cljc
+;; side is the general implementation; what has to match across hosts is the
+;; step function and the composition, which is what these expose.
+
+(defn fnv-step [h :i64 byte :i64] :i64
+  (mul32 (i32-xor (u32-wrap h) (u32-wrap byte)) 16777619))
+
+(defn fnv1a-of-3 [b0 :i64 b1 :i64 b2 :i64] :i64
+  (fnv-step (fnv-step (fnv-step 2166136261 b0) b1) b2))
+
+(defn key-of-3 [b0 :i64 b1 :i64 b2 :i64] :i64
+  (mix32 (fnv1a-of-3 b0 b1 b2)))
+
+;; --- rendezvous scoring ---------------------------------------------------
+
+(defn virtual-key [node-key :i64 v :i64] :i64
+  ;; The v-th virtual id of a node. A node of weight w gets w independent
+  ;; draws, which is how weight is expressed without the logarithm that
+  ;; weighted-HRW's usual formula needs and this profile does not have.
+  (mix32 (u32-wrap (i32-xor node-key (mix32 v)))))
+
+(defn rendezvous-score [pg-key :i64 node-key :i64 v :i64] :i64
+  (mix32 (u32-wrap (i32-xor pg-key (virtual-key node-key v)))))
+
+(defn best-score [pg-key :i64 node-key :i64 v :i64 acc :i64] :i64
+  ;; Highest score over virtual ids [0, v). Explicit recursion with the whole
+  ;; state in the parameter list: a `loop` counts its bindings PLUS every
+  ;; outer variable its body captures against the 5-parameter budget, and
+  ;; pg-key/node-key/v/acc already fills it.
+  (if (< v 1)
+    acc
+    (let [s (rendezvous-score pg-key node-key (- v 1))]
+      (best-score pg-key node-key (- v 1)
+                  (if (< acc s) s acc)))))
+
+;; --- object placement -----------------------------------------------------
+
+(defn group-of [object-key :i64 group-count :i64] :i64
+  ;; A function, never a stored row. This is what keeps the metadata plane
+  ;; O(groups) rather than O(objects x shards) — see ADR-2607299200 section 3.
+  (- object-key (* (quot object-key group-count) group-count)))
+
+;; --- audit sizing ---------------------------------------------------------
+
+(defn samples-lower-bound [percent-deleted :i64 nines :i64] :i64
+  ;; A conservative integer stand-in for ceil(ln(delta)/ln(1-f)), for a guest
+  ;; that has to size a challenge set without floating point. Uses
+  ;; ln(1-f) <= -f, giving q >= nines * ln(10) / f; with f = percent/100 and
+  ;; ln(10) < 2.303 approximated as 2303/1000 that is
+  ;; q >= nines * 2303 * 100 / (1000 * percent), rounded up.
+  ;; ALWAYS >= the exact value, so a guest never under-audits. The .cljc
+  ;; `samples-needed` is the exact figure and the parity test asserts the
+  ;; relationship rather than equality.
+  (+ (quot (* (* nines 2303) 100) (* 1000 percent-deleted)) 1))

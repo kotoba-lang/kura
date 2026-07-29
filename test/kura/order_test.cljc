@@ -1,0 +1,117 @@
+(ns kura.order-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [kura.order :as o]))
+
+(def base
+  (o/order {:node-id "node-7" :action :get :shard-id "obj-1/0/3"
+            :max-bytes 4194304 :expires-at 2000 :issued-at 1000 :nonce "n-abc"}))
+
+(defn- ok-opts [& {:as over}]
+  (merge {:node-id "node-7" :action :get :now 1500
+          :verify-fn (fn [_ sig] (= sig "good")) :signature "good"}
+         over))
+
+(deftest a-well-formed-order-is-admitted
+  (let [r (o/admit base (ok-opts))]
+    (is (:ok? r))
+    (is (empty? (:reasons r)))
+    (is (= :get (:action r)))
+    (is (= 4194304 (:max-bytes r)))))
+
+(deftest every-reason-is-returned-not-just-the-first
+  (testing "a caller debugging a coordinator integration wants all of them at
+            once; stopping at the first turns that into a guessing game"
+    (let [bad (o/order {:node-id "someone-else" :action :nope :shard-id nil
+                        :max-bytes -1 :expires-at 100 :issued-at 1000 :nonce nil})
+          r (o/admit bad (ok-opts))
+          reasons (set (map :reason (:reasons r)))]
+      (is (false? (:ok? r)))
+      (is (contains? reasons :addressed-to-another-node))
+      (is (contains? reasons :unknown-action))
+      (is (contains? reasons :missing-shard-id))
+      (is (contains? reasons :missing-or-invalid-limit))
+      (is (contains? reasons :order-expired))
+      (is (contains? reasons :missing-nonce))
+      (is (> (count reasons) 5) "all of them, in one pass"))))
+
+(deftest signature-is-checked-last-and-skipped-when-content-is-bad
+  (testing "not an optimisation — it means a node under a flood of malformed
+            orders does no asymmetric crypto on any of them"
+    (let [calls (atom 0)
+          verify (fn [_ _] (swap! calls inc) true)
+          malformed (o/order {:node-id nil :action :get :shard-id "s"
+                              :max-bytes 1 :expires-at 9999 :nonce "n"})]
+      (o/admit malformed (ok-opts :verify-fn verify))
+      (is (zero? @calls) "verifier never invoked on an incoherent order")
+      (o/admit base (ok-opts :verify-fn verify))
+      (is (= 1 @calls) "and invoked exactly once on a coherent one"))))
+
+(deftest addressed-to-another-node-is-rejected
+  (let [r (o/admit base (ok-opts :node-id "node-9"))]
+    (is (false? (:ok? r)))
+    (is (= :addressed-to-another-node (:reason (first (:reasons r)))))))
+
+(deftest action-must-match-the-request
+  (testing "an order authorising a read must not serve a write"
+    (let [r (o/admit base (ok-opts :action :put))]
+      (is (false? (:ok? r)))
+      (is (some #(= :action-mismatch (:reason %)) (:reasons r)))))
+  (testing "and repair traffic is not client traffic"
+    (let [repair (assoc base :action :repair-get)
+          r (o/admit repair (ok-opts :action :get))]
+      (is (false? (:ok? r))))))
+
+(deftest expiry-and-skew
+  (is (false? (:ok? (o/admit base (ok-opts :now 2001)))) "expired")
+  (is (:ok? (o/admit base (ok-opts :now 2000))) "exactly at expiry is still valid")
+  (testing "skew is a one-way allowance: nodes and coordinators do not share a
+            clock, but an order is never honoured before it exists"
+    (is (:ok? (o/admit base (ok-opts :now 2030 :skew-seconds 60))))
+    (let [r (o/admit base (ok-opts :now 500))]
+      (is (false? (:ok? r)))
+      (is (some #(= :order-not-yet-valid (:reason %)) (:reasons r))))))
+
+(deftest replayed-nonce-is-rejected
+  (testing "an admitted order is a claim on money, so replay is a payment bug
+            and not only an authorisation one"
+    (let [r (o/admit base (ok-opts :seen-nonce? #{"n-abc"}))]
+      (is (false? (:ok? r)))
+      (is (some #(= :replayed-nonce (:reason %)) (:reasons r))))))
+
+(deftest a-missing-verifier-is-a-rejection-not-a-pass
+  (let [r (o/admit base (ok-opts :verify-fn nil))]
+    (is (false? (:ok? r)))
+    (is (some #(= :no-verifier-configured (:reason %)) (:reasons r)))))
+
+(deftest bad-signature-is-rejected
+  (let [r (o/admit base (ok-opts :signature "forged"))]
+    (is (false? (:ok? r)))
+    (is (= [:bad-coordinator-signature] (mapv :reason (:reasons r))))))
+
+(deftest signing-bytes-are-unambiguous
+  (testing "length-delimited so no two distinct orders serialise the same way
+            by shifting a delimiter into a neighbouring field"
+    (let [a (o/order {:node-id "ab" :action :get :shard-id "c"
+                      :max-bytes 1 :expires-at 2 :issued-at 3 :nonce "d"})
+          b (o/order {:node-id "a" :action :get :shard-id "bc"
+                      :max-bytes 1 :expires-at 2 :issued-at 3 :nonce "d"})]
+      (is (not= (o/signing-bytes a) (o/signing-bytes b)))
+      (is (not= (o/order-id a) (o/order-id b)))))
+  (testing "and stable for the same order"
+    (is (= (o/signing-bytes base) (o/signing-bytes base)))
+    (is (= (o/order-id base) (o/order-id base)))))
+
+(deftest limit-is-enforced-continuously
+  (testing "a node that checks the limit once and then streams has not checked
+            it — the client controls how much it sends"
+    (is (o/within-limit? base 0 4194304))
+    (is (o/within-limit? base 4194000 304))
+    (is (false? (o/within-limit? base 4194304 1)))
+    (is (false? (o/within-limit? base 0 4194305)))))
+
+(deftest settlement-leaf-sums-to-bytes-owed
+  (let [l (o/settlement-leaf base 1048576 "order-hash")]
+    (is (= 1048576 (:sum l)))
+    (is (= "node-7|n-abc" (:id l)))
+    (is (thrown? #?(:clj Throwable :cljs js/Error)
+                 (o/settlement-leaf base -1 "h")))))
