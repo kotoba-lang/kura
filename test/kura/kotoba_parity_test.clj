@@ -81,10 +81,10 @@
                               (map-indexed vector pairs)))
           actual (run-cases cases)]
       (doseq [[i [pg n]] (map-indexed vector pairs)]
-        (is (= (p/score pg (p/node {:id n :weight 1}))
+        (is (= (p/score pg (p/node {:id n :weight 1 :availability :always-on}))
                (get actual (str "s0_" i)))
             (str "weight-1 score for " pg "/" n))
-        (is (= (p/score pg (p/node {:id n :weight 4}))
+        (is (= (p/score pg (p/node {:id n :weight 4 :availability :always-on}))
                (get actual (str "b4_" i)))
             (str "weight-4 score for " pg "/" n))))))
 

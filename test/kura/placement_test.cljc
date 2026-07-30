@@ -9,6 +9,7 @@
   (vec (for [r (range racks) i (range per-rack)]
          (p/node {:id (str "n-" r "-" i)
                   :weight 1
+                  :availability :always-on
                   :domains {:rack (str "rack-" r)
                             :operator (if (even? r) "acme" "globex")
                             :region (if (< r (quot racks 2)) "apac" "emea")}}))))
@@ -78,7 +79,7 @@
           (str "worst node " (apply max (vals counts)) " vs expected " expected)))))
 
 (deftest weight-buys-proportionally-more-groups
-  (let [ns (conj (nodes 4 4) (p/node {:id "big" :weight 8
+  (let [ns (conj (nodes 4 4) (p/node {:id "big" :weight 8 :availability :always-on
                                       :domains {:rack "rack-9" :operator "acme"
                                                 :region "apac"}}))
         pol (p/policy {:caps {}})
@@ -124,7 +125,7 @@
             ring would break — is that each affected group gains only the
             newcomer and loses exactly one node. Nothing reshuffles."
     (let [before (nodes 6 6)
-          newcomer (p/node {:id "n-new" :domains {:rack "rack-2" :operator "acme"
+          newcomer (p/node {:id "n-new" :availability :always-on :domains {:rack "rack-2" :operator "acme"
                                                   :region "apac"}})
           after (conj before newcomer)
           cfg {:group-count 300 :n 26 :pol (p/policy {:caps {:rack 5}})}
@@ -146,3 +147,74 @@
     (is (= (set (range 26)) (set (keys (:shards pl)))))
     (is (= 26 (count (set (vals (:shards pl))))) "one shard per distinct node")
     (is (= pl (p/placement "obj-42" cfg)))))
+
+;; --- availability ----------------------------------------------------------
+;;
+;; The class exists because a laptop's disk is fine and the laptop is in a bag.
+;; Every test here is about keeping those two facts from being confused.
+
+(defn- laptops
+  "A fleet of intermittent nodes, each its own site — which is the honest
+  declaration for machines that are genuinely apart, and still does not make
+  them a durable network."
+  [n]
+  (vec (for [i (range n)]
+         (p/node {:id (str "lap-" i) :availability :intermittent
+                  :domains {:rack (str "home-" i) :operator (str "op-" i)
+                            :region "apac"}}))))
+
+(deftest availability-must-be-declared
+  (testing "no default is safe, so there is no default"
+    (is (thrown? #?(:clj AssertionError :cljs js/Error)
+                 (p/node {:id "n-1" :domains {:rack "r1"}})))
+    (is (thrown? #?(:clj AssertionError :cljs js/Error)
+                 (p/node {:id "n-1" :availability :sometimes})))
+    (testing "and the message says why, because the operator has to choose"
+      (is (re-find #"sleep"
+                   #?(:clj (try (p/node {:id "n-1"}) (catch AssertionError e (.getMessage e)))
+                      :cljs (try (p/node {:id "n-1"}) (catch :default e (str e)))))))))
+
+(deftest the-intermittent-cap-is-asymmetric
+  (testing "always-on is uncapped — rented buckets are the floor this stands on"
+    (let [r (p/select "pg-0" (nodes 6 6) 26 (p/policy {:max-intermittent 2}))]
+      (is (:complete? r))
+      (is (= 26 (:always-on r)))
+      (is (zero? (:intermittent r))
+          "a cap of 2 must not mean AT LEAST 2 — there are no laptops here")))
+  (testing "intermittent is capped at exactly what was allowed"
+    (let [mixed (into (nodes 6 6) (laptops 20))
+          r (p/select "pg-0" mixed 26 (p/policy {:max-intermittent 3}))]
+      (is (:complete? r))
+      (is (= 3 (:intermittent r)) "no more than the policy permits")
+      (is (= 23 (:always-on r))))))
+
+(deftest the-default-is-zero-sleeping-nodes
+  (testing "a policy written before this cap existed asked for no laptops, and
+            must keep getting none — granting some silently would change the
+            durability of every object already placed under it"
+    (let [mixed (into (nodes 6 6) (laptops 20))
+          r (p/select "pg-0" mixed 26 (p/policy {}))]
+      (is (zero? (:intermittent r)))
+      (is (= 26 (:always-on r))))))
+
+(deftest a-network-of-laptops-cannot-fill-a-group
+  (testing "this is the finding that matters for onboarding consumer hardware:
+            20 laptops at 20 separate sites pass every domain cap and still
+            cannot hold one object, because the code's tolerance for absence is
+            a budget and they spend all of it"
+    (let [r (p/select "pg-0" (laptops 20) 26 (p/policy {:max-intermittent 7}))]
+      (is (not (:complete? r)))
+      (is (= 7 (:intermittent r)))
+      (is (= 19 (:shortfall r))
+          "short by 19 — the fleet is not small, it is asleep"))))
+
+(deftest a-full-group-still-reports-how-much-of-it-sleeps
+  (testing ":complete? answers 'did I get n shards', not 'can I read them
+            tonight'. A caller reading only that flag never learns the
+            difference, so select reports both counts."
+    (let [mixed (into (nodes 6 6) (laptops 20))
+          r (p/select "pg-0" mixed 26 (p/policy {:max-intermittent 7}))]
+      (is (:complete? r))
+      (is (= 7 (:intermittent r)))
+      (is (= 26 (+ (:intermittent r) (:always-on r)))
+          "every chosen node is classified — none is unaccounted for"))))

@@ -166,14 +166,29 @@
   code's tolerance. A cap ABOVE tolerance means a single rack or operator can
   take the object out, which is precisely the correlated failure the storage
   multiplier in ADR-2607299200 section 1 assumes away."
-  [layout {:keys [caps]}]
-  (let [tol (lrc/max-tolerated-erasures layout)]
-    (into (sorted-map)
-          (map (fn [[kind cap]]
-                 [kind {:cap cap
-                        :tolerated tol
-                        :survivable? (<= cap tol)
-                        ;; A cap equal to tolerance survives, with zero
-                        ;; margin for anything else failing at the same time.
-                        :margin-after-domain-loss (- tol cap)}]))
-          caps)))
+  [layout {:keys [caps max-intermittent]}]
+  (let [tol (lrc/max-tolerated-erasures layout)
+        report (fn [cap] {:cap cap
+                          :tolerated tol
+                          :survivable? (<= cap tol)
+                          ;; A cap equal to tolerance survives, with zero
+                          ;; margin for anything else failing at the same time.
+                          :margin-after-domain-loss (- tol cap)})]
+    (cond-> (into (sorted-map) (map (fn [[kind cap]] [kind (report cap)])) caps)
+      ;; Availability is reported alongside the domain caps because it is the
+      ;; same arithmetic, but it answers a different question: the domains ask
+      ;; *can the object survive losing a rack*, and this asks *can it be read
+      ;; right now, with every laptop in the fleet asleep*. A fleet can pass
+      ;; every domain cap and still be unreadable on a Sunday.
+      (some? max-intermittent)
+      (assoc :availability
+             (assoc (report max-intermittent)
+                    :readable-from-always-on-alone? (<= max-intermittent tol)
+                    :note (if (<= max-intermittent tol)
+                            (str "at most " max-intermittent " shards may sleep, "
+                                 "within the code's tolerance of " tol
+                                 " — always-on nodes alone can serve a read")
+                            (str max-intermittent " shards may sleep but the code "
+                                 "tolerates only " tol ": a read can require "
+                                 "waking somebody's laptop, which is not a "
+                                 "durability property and cannot be promised")))))))
