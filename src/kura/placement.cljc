@@ -38,14 +38,38 @@
 
 ;; --- nodes ----------------------------------------------------------------
 
+(def availabilities
+  "What a node can claim about being awake.
+
+  `:always-on` is rented object storage and machines that stay powered and
+  reachable. `:intermittent` is a laptop: the disk is fine, the machine is in
+  a bag. The distinction is not cosmetic — **it is the difference between a
+  shard that is temporarily unreadable and a shard that is gone**, and the
+  whole point of separating them is that the first must not be priced,
+  reported, or punished as the second."
+  #{:always-on :intermittent})
+
 (defn node
   "A storage node. `:id` is an ASCII identifier, `:weight` a positive integer
   count of virtual ids (capacity, roughly), `:domains` a map of domain kind ->
-  value, e.g. `{:rack \"r3\" :operator \"acme\" :region \"apac\"}`."
-  [{:keys [id weight domains] :or {weight 1 domains {}}}]
+  value, e.g. `{:rack \"r3\" :operator \"acme\" :region \"apac\"}`.
+
+  `:availability` must be stated. There is no safe default: assume
+  `:always-on` and a fleet of sleeping laptops reports durability it does not
+  have; assume `:intermittent` and rented buckets — which are always-on
+  because that is the product — become unplaceable. Only the operator knows,
+  so the operator says, exactly as `:site` must be stated rather than guessed
+  from a hostname."
+  [{:keys [id weight domains availability] :or {weight 1 domains {}}}]
   (assert (h/ascii? id) "node id must be ASCII")
   (assert (pos? weight) "node weight must be positive")
-  {:id id :weight weight :domains domains})
+  (assert (contains? availabilities availability)
+          (str ":availability must be one of " availabilities ", got "
+               (pr-str availability) ". A node that does not say whether it "
+               "stays awake cannot be placed on safely: the code's tolerance "
+               "for missing shards is a budget, and shards on machines that "
+               "sleep spend it every night."))
+  {:id id :weight weight :domains domains :availability availability})
 
 (defn- virtual-key
   "Placement key of the `v`-th virtual id of `node-id`."
@@ -83,19 +107,40 @@
   declaring: with a code that survives 7 arbitrary losses, `{:rack 7}` means a
   rack failure is exactly survivable and `{:rack 8}` means it is not. Nothing
   here enforces that relationship — `kura.repair/policy-headroom` reports it,
-  because the honest answer depends on the code, and the code is a parameter."
-  [{:keys [caps] :or {caps {}}}]
-  {:caps caps})
+  because the honest answer depends on the code, and the code is a parameter.
+
+  `:max-intermittent` is how many of the n shards may sit on nodes that
+  declared `:intermittent`. **It defaults to zero, which is the only safe
+  default**: a policy written before this cap existed asked for no sleeping
+  nodes, and silently granting them some would change the durability of every
+  object already placed under it.
+
+  Set at or below the code's tolerance, the cap means something exact and
+  worth having: *the object is readable from always-on nodes alone.* Every
+  sleeping node is then a bonus copy rather than a dependency, which is what
+  makes consumer hardware safe to accept at all."
+  [{:keys [caps max-intermittent] :or {caps {} max-intermittent 0}}]
+  (assert (not (neg? max-intermittent)) ":max-intermittent cannot be negative")
+  {:caps caps :max-intermittent max-intermittent})
 
 (defn- would-exceed?
-  "Whether adding `node` to `chosen` breaks any cap."
-  [{:keys [caps]} chosen node]
-  (some (fn [[kind cap]]
-          (let [v (get-in node [:domains kind])]
-            (and (some? v)
-                 (>= (count (filter #(= v (get-in % [:domains kind])) chosen))
-                     cap))))
-        caps))
+  "Whether adding `node` to `chosen` breaks any cap.
+
+  The domain caps are symmetric — every value of a kind gets the same ceiling
+  — but the availability cap is deliberately **not**. `:always-on` is
+  uncapped; only `:intermittent` is counted. Treating the two symmetrically
+  would cap rented buckets at the same small number as laptops, and rented
+  buckets are the always-on floor the whole arrangement stands on."
+  [{:keys [caps max-intermittent]} chosen node]
+  (or (and (= :intermittent (:availability node))
+           (>= (count (filter #(= :intermittent (:availability %)) chosen))
+               max-intermittent))
+      (some (fn [[kind cap]]
+              (let [v (get-in node [:domains kind])]
+                (and (some? v)
+                     (>= (count (filter #(= v (get-in % [:domains kind])) chosen))
+                         cap))))
+            caps)))
 
 (defn select
   "Choose `n` nodes for placement group `pg` under `pol`.
@@ -120,7 +165,13 @@
                        (ranked pg nodes))]
     {:nodes (mapv #(dissoc % ::score) chosen)
      :complete? (= n (count chosen))
-     :shortfall (max 0 (- n (count chosen)))}))
+     :shortfall (max 0 (- n (count chosen)))
+     ;; Reported because it is the number that decides whether a read needs a
+     ;; machine to be awake. A group at the cap is still `:complete?`, and a
+     ;; caller reading only that flag would never learn how much of its
+     ;; durability is currently in somebody's bag.
+     :intermittent (count (filter #(= :intermittent (:availability %)) chosen))
+     :always-on (count (filter #(= :always-on (:availability %)) chosen))}))
 
 ;; --- object -> group ------------------------------------------------------
 

@@ -79,7 +79,8 @@
 
 (deftest read-sources-map-shards-to-nodes
   (let [nodes (vec (for [i (range 40)]
-                     (p/node {:id (str "n-" i) :domains {:rack (str "rack-" (mod i 8))}})))
+                     (p/node {:id (str "n-" i) :availability :always-on
+                              :domains {:rack (str "rack-" (mod i 8))}})))
         sel (p/select "pg-1" nodes 26 (p/policy {:caps {:rack 4}}))
         shard->node (p/assign sel)
         plan (lrc/recovery-plan layout #{7})
@@ -101,3 +102,26 @@
               away, so it must be reported, not silently accepted"
       (is (false? (get-in h [:region :survivable?])))
       (is (neg? (get-in h [:region :margin-after-domain-loss]))))))
+
+;; --- availability headroom -------------------------------------------------
+
+(deftest headroom-reports-whether-a-read-needs-a-laptop-awake
+  (testing "the layout tolerates 7, so 7 sleeping shards is exactly readable
+            from always-on nodes alone"
+    (let [h (r/policy-headroom layout (p/policy {:max-intermittent 7}))]
+      (is (= 7 (get-in h [:availability :cap])))
+      (is (true? (get-in h [:availability :readable-from-always-on-alone?])))
+      (is (zero? (get-in h [:availability :margin-after-domain-loss]))
+          "exactly readable means zero margin for anything else failing")))
+  (testing "one past tolerance and a read can require waking somebody's laptop,
+            which is not a durability property and must not be promised"
+    (let [h (r/policy-headroom layout (p/policy {:max-intermittent 8}))]
+      (is (false? (get-in h [:availability :readable-from-always-on-alone?])))
+      (is (re-find #"cannot be promised" (get-in h [:availability :note])))))
+  (testing "the default policy admits no sleeping nodes at all"
+    (is (zero? (get-in (r/policy-headroom layout (p/policy {})) [:availability :cap]))))
+  (testing "and it does not disturb the domain caps it sits beside — a fleet can
+            pass every domain cap and still be unreadable on a Sunday"
+    (let [h (r/policy-headroom layout (p/policy {:caps {:rack 7} :max-intermittent 0}))]
+      (is (true? (get-in h [:rack :survivable?])))
+      (is (= 7 (get-in h [:rack :cap]))))))
