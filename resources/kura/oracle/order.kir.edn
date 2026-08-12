@@ -1,0 +1,257 @@
+{:format :kotoba.kir/v4,
+ :signature nil,
+ :functions
+ [{:name field-part,
+   :params [s],
+   :result :string,
+   :effects #{},
+   :body
+   (string-concat
+    (__kotoba_string_from_i64 (string-byte-length s))
+    (string-concat ":" s)),
+   :param-types [:string]}
+  {:name signing-head,
+   :params [node-id action shard-id],
+   :result :string,
+   :effects #{},
+   :body
+   (string-concat
+    (string-concat
+     (string-concat
+      "kura-order-v1|"
+      (string-concat "" (field-part node-id)))
+     (string-concat "" (field-part action)))
+    (string-concat "" (field-part shard-id))),
+   :param-types [:string :string :string]}
+  {:name signing-tail,
+   :params [max-bytes expires-at issued-at nonce],
+   :result :string,
+   :effects #{},
+   :body
+   (string-concat
+    (string-concat
+     (string-concat
+      (field-part (__kotoba_string_from_i64 max-bytes))
+      (string-concat
+       ""
+       (field-part (__kotoba_string_from_i64 expires-at))))
+     (string-concat
+      ""
+      (field-part (__kotoba_string_from_i64 issued-at))))
+    (string-concat "" (field-part nonce))),
+   :param-types [:i64 :i64 :i64 :string]}
+  {:name signing-bytes,
+   :params [o],
+   :result :string,
+   :effects #{},
+   :body
+   (string-concat
+    (signing-head
+     (record-get
+      [:record
+       :order/unsigned
+       [[:node-id :string]
+        [:action :string]
+        [:shard-id :string]
+        [:max-bytes :i64]
+        [:expires-at :i64]
+        [:issued-at :i64]
+        [:nonce :string]]]
+      o
+      :node-id)
+     (record-get
+      [:record
+       :order/unsigned
+       [[:node-id :string]
+        [:action :string]
+        [:shard-id :string]
+        [:max-bytes :i64]
+        [:expires-at :i64]
+        [:issued-at :i64]
+        [:nonce :string]]]
+      o
+      :action)
+     (record-get
+      [:record
+       :order/unsigned
+       [[:node-id :string]
+        [:action :string]
+        [:shard-id :string]
+        [:max-bytes :i64]
+        [:expires-at :i64]
+        [:issued-at :i64]
+        [:nonce :string]]]
+      o
+      :shard-id))
+    (signing-tail
+     (record-get
+      [:record
+       :order/unsigned
+       [[:node-id :string]
+        [:action :string]
+        [:shard-id :string]
+        [:max-bytes :i64]
+        [:expires-at :i64]
+        [:issued-at :i64]
+        [:nonce :string]]]
+      o
+      :max-bytes)
+     (record-get
+      [:record
+       :order/unsigned
+       [[:node-id :string]
+        [:action :string]
+        [:shard-id :string]
+        [:max-bytes :i64]
+        [:expires-at :i64]
+        [:issued-at :i64]
+        [:nonce :string]]]
+      o
+      :expires-at)
+     (record-get
+      [:record
+       :order/unsigned
+       [[:node-id :string]
+        [:action :string]
+        [:shard-id :string]
+        [:max-bytes :i64]
+        [:expires-at :i64]
+        [:issued-at :i64]
+        [:nonce :string]]]
+      o
+      :issued-at)
+     (record-get
+      [:record
+       :order/unsigned
+       [[:node-id :string]
+        [:action :string]
+        [:shard-id :string]
+        [:max-bytes :i64]
+        [:expires-at :i64]
+        [:issued-at :i64]
+        [:nonce :string]]]
+      o
+      :nonce))),
+   :param-types
+   [[:record
+     :order/unsigned
+     [[:node-id :string]
+      [:action :string]
+      [:shard-id :string]
+      [:max-bytes :i64]
+      [:expires-at :i64]
+      [:issued-at :i64]
+      [:nonce :string]]]]}
+  {:name settlement-leaf-id,
+   :params [node-id nonce],
+   :result :string,
+   :effects #{},
+   :body (string-concat node-id (string-concat "|" nonce)),
+   :param-types [:string :string]}
+  {:name known-action?,
+   :params [action],
+   :result :i64,
+   :effects #{},
+   :body
+   (let
+    [or-tmp__11099 (string=? action "put")]
+    (if
+     or-tmp__11099
+     or-tmp__11099
+     (let
+      [or-tmp__11100 (string=? action "get")]
+      (if
+       or-tmp__11100
+       or-tmp__11100
+       (let
+        [or-tmp__11101 (string=? action "delete")]
+        (if
+         or-tmp__11101
+         or-tmp__11101
+         (let
+          [or-tmp__11102 (string=? action "repair-get")]
+          (if
+           or-tmp__11102
+           or-tmp__11102
+           (string=? action "audit-get"))))))))),
+   :param-types [:string]}
+  {:name expired?,
+   :params [expires-at now skew],
+   :result :i64,
+   :effects #{},
+   :body (> now (+ expires-at skew)),
+   :param-types [:i64 :i64 :i64]}
+  {:name not-yet-valid?,
+   :params [issued-at now],
+   :result :i64,
+   :effects #{},
+   :body (< now issued-at),
+   :param-types [:i64 :i64]}
+  {:name within-limit?,
+   :params [max-bytes transferred n],
+   :result :i64,
+   :effects #{},
+   :body (<= (+ transferred n) max-bytes),
+   :param-types [:i64 :i64 :i64]}
+  {:name signature-check-needed?,
+   :params [content-problems verifier-present],
+   :result :i64,
+   :effects #{},
+   :body
+   (let
+    [and-tmp__11103 (= 0 content-problems)]
+    (if and-tmp__11103 verifier-present and-tmp__11103)),
+   :param-types [:i64 :i64]}
+  {:name admit-ok?,
+   :params [content-problems verifier-present signature-valid],
+   :result :i64,
+   :effects #{},
+   :body
+   (let
+    [and-tmp__11104
+     (signature-check-needed? content-problems verifier-present)]
+    (if and-tmp__11104 signature-valid and-tmp__11104)),
+   :param-types [:i64 :i64 :i64]}
+  {:name __kotoba_string_from_i64_nat,
+   :params [n],
+   :result :string,
+   :effects #{},
+   :body
+   (if
+    (< n 10)
+    (string-substring "0123456789" n (+ n 1))
+    (string-concat
+     (__kotoba_string_from_i64_nat (quot n 10))
+     (string-substring
+      "0123456789"
+      (- n (* (quot n 10) 10))
+      (+ (- n (* (quot n 10) 10)) 1)))),
+   :param-types [:i64]}
+  {:name __kotoba_string_from_i64,
+   :params [n],
+   :result :string,
+   :effects #{},
+   :body
+   (if
+    (< n 0)
+    (string-concat "-" (__kotoba_string_from_i64_nat (- 0 n)))
+    (__kotoba_string_from_i64_nat n)),
+   :param-types [:i64]}],
+ :oracle-value nil,
+ :schema-identities nil,
+ :exports
+ [field-part
+  signing-head
+  signing-tail
+  signing-bytes
+  settlement-leaf-id
+  known-action?
+  expired?
+  not-yet-valid?
+  within-limit?
+  signature-check-needed?
+  admit-ok?],
+ :schemas nil,
+ :effects #{},
+ :blocks [],
+ :entry nil}

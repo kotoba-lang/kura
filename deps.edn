@@ -1,20 +1,57 @@
-{:paths ["src"]
+{:paths ["src" "resources"]
  :version "0.1.0"
- ;; Two runtime deps, both reuse rather than reinvention:
+ ;; Three runtime deps, all reuse rather than reinvention:
  ;;   erasure    — the code itself; repair asks it what is recoverable and
  ;;                what to read, and never re-derives either.
  ;;   merkle-sum — the audit tree and the settlement tree. A sum tree is the
  ;;                right shape for both (leaf sums are bytes held / bytes
  ;;                owed), and this workspace already has an audited one.
+ ;;   kotoba-kir — what makes `kotoba/order_core.kotoba` the thing that RUNS.
+ ;;                `kura.kotoba-oracle` executes the shipped
+ ;;                `resources/kura/oracle/order.kir.edn` through it, so the
+ ;;                admission judgements are what this library runs rather than
+ ;;                what a test compares against (ADR-2608112100). The COMPILER
+ ;;                stays test-only (see :test): it produced the artifact and
+ ;;                never reaches a consumer.
+ ;;
+ ;;                Pinned to the kir the pinned compiler emits for
+ ;;                (`io.github.kotoba-lang/compiler` 45f0e5e3 declares
+ ;;                kotoba-kir fa2fbb58). **They move together or not at all.**
+ ;;                KIR is a versioned document, and an interpreter reading a
+ ;;                shape its emitter did not write is exactly the failure the
+ ;;                artifact was supposed to remove — measured 2026-08-12:
+ ;;                holding the compiler here and advancing only the interpreter
+ ;;                to 6d08e3c gave 1 failure / 32 errors.
+ ;;
+ ;;                Advancing the pair is a LANGUAGE MIGRATION, not a pin bump,
+ ;;                and that is why this repo is still on the old one. Measured
+ ;;                the same day: compiler b0095427 + kir 6d08e3c rejects this
+ ;;                repo's own source with `expression type mismatch: expected
+ ;;                i64, got bool` — `string=?` returns `:i64` here and `:bool`
+ ;;                there, so every predicate declaration in all three cores,
+ ;;                and every parity expectation written against 1/0, changes
+ ;;                with the pin. That is a slice of its own.
+ ;;
+ ;;                What the migration would buy is written down in
+ ;;                `kura.order/signing-bytes`: on the old interpreter
+ ;;                `utf8-substring!` guards with `(integer? start)`, and under
+ ;;                ClojureScript an `:i64` is a `js/BigInt`, for which that is
+ ;;                false — so every core that formats an integer into a string
+ ;;                throws there and not on the JVM. `kura.cljs-runner` is what
+ ;;                caught it; a green JVM suite would not have.
  :deps {io.github.kotoba-lang/erasure
         {:git/url "https://github.com/kotoba-lang/erasure.git"
          :git/sha "6b6b95eb8f5733b468e569c59eb58b492e6dc08b"}
         io.github.kotoba-lang/merkle-sum
         {:git/url "https://github.com/kotoba-lang/merkle-sum.git"
-         :git/sha "5bb473aed0c0bba6c0ae758d000a6142a5d79891"}}
+         :git/sha "5bb473aed0c0bba6c0ae758d000a6142a5d79891"}
+        io.github.kotoba-lang/kotoba-kir
+        {:git/url "https://github.com/kotoba-lang/kotoba-kir.git"
+         :git/sha "fa2fbb5839c97b81fb1f6cb61787332bb55f2b9b"}}
  :aliases
  {:test {:extra-paths ["test"]
-         ;; kotoba-lang/compiler is TEST-ONLY, for the parity gate over
+         ;; kotoba-lang/compiler is TEST-ONLY: it produces the shipped KIR
+         ;; (:gen below) and drives the parity gate over
          ;; kotoba/kura_core.kotoba (ADR-2607299200 section 5).
          :extra-deps {io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}
@@ -23,6 +60,11 @@
                        :git/sha "45f0e5e3d633e3fc9d8003396f64422b7566e02b"}}
          :main-opts ["-m" "cognitect.test-runner"]
          :exec-fn cognitect.test-runner.api/test}
+  ;; Regenerate the shipped decision-core KIR. Combine with :test, which is
+  ;; where the compiler lives:
+  ;;
+  ;;   clojure -M:test:gen
+  :gen {:main-opts ["-m" "kura.kotoba-oracle-gen"]}
   ;; The portable suite under ClojureScript. The parity gate is JVM-only.
   ;;   clojure -M:cljs -m cljs.main --target node -m kura.cljs-runner
   :cljs {:extra-paths ["test"]

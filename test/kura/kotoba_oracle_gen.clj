@@ -1,0 +1,41 @@
+(ns kura.kotoba-oracle-gen
+  "Regenerate the shipped KIR from the ports under `kotoba/`.
+
+      clojure -M:test:gen
+
+  Runs under :test because the compiler lives there and must not reach the
+  library. What it writes IS what a consumer loads, so nothing here transforms
+  it: same compile call as the drift test, pretty-printed EDN, no
+  post-processing. If this file and that test disagreed about how to compile,
+  the test would be checking something other than what ships."
+  (:require [clojure.java.io :as io]
+            [clojure.pprint :as pp]
+            [kotoba.compiler.core :as compiler]
+            [kura.kotoba-oracle :as oracle])
+  (:gen-class))
+
+(def target
+  "The portable target the shipped KIR is compiled for.
+
+  `kura.kotoba-harness` compiles the parity probes for the same target, so the
+  gate and the artifact are produced the same way. It is named here rather
+  than in two places because that is what keeps regeneration reproducible."
+  :wasm32-kotoba-v1)
+
+(defn compile-kir [source-path]
+  (let [result (compiler/compile-source (slurp (io/file source-path)) target {})]
+    (or (:kir result)
+        (throw (ex-info "compile-source returned no :kir" {:source source-path})))))
+
+(defn write-artifact! [id source-path]
+  (let [out (io/file "resources" (oracle/resource-path id))]
+    (io/make-parents out)
+    (spit out (with-out-str (pp/pprint (compile-kir source-path))))
+    (.getPath out)))
+
+(defn regenerate-all! []
+  (mapv (fn [[id source]] (write-artifact! id source)) (sort-by key oracle/cores)))
+
+(defn -main [& _]
+  (run! println (regenerate-all!))
+  (shutdown-agents))
