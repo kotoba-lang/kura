@@ -17,8 +17,19 @@
 ;; and two distinct orders serialise the same). Holding two implementations
 ;; byte-equal is the only check that catches it.
 ;;
-;; The `.cljc` is unchanged and stays the implementation consumers load;
-;; `kura.kotoba-decision-parity-test` pins these against it.
+;; The admission half of this module is what `kura.order` RUNS: it is compiled
+;; to `resources/kura/oracle/order.kir.edn` and executed through
+;; `kura.kotoba-oracle` (ADR-2608112100 — a core with a parity test is not a
+;; core that has moved). `kura.kotoba-decision-parity-test` is kept, re-read as
+;; "the host reaches the rule" rather than "two implementations agree", and
+;; `kura.kotoba-oracle-test` adds the two questions parity structurally cannot
+;; ask: whether the shipped artifact is this source compiled, and whether the
+;; host follows a core that answers differently.
+;;
+;; `signing-bytes` / `signing-head` / `signing-tail` / `field-part` are NOT
+;; delegated — see the NOTE below for the measurement. `kotoba/kura_core.kotoba`
+;; and `kotoba/placement_core.kotoba` are not delegated either, and are still
+;; held by parity alone.
 ;;
 ;; What deliberately did NOT cross, and why:
 ;;
@@ -57,16 +68,34 @@
 ;;                         reference interpreter, so walking an n-byte string
 ;;                         is O(n^2).
 ;;
-;; NOTE on the `.cljc`, recorded and NOT fixed in this slice: `signing-bytes`
-;; length-delimits with `(count s)`, which on the JVM is a UTF-16 *character*
-;; count and in ClojureScript a UTF-16 code-unit count, while this port uses
-;; `string-length` (an alias of `string-byte-length`, UTF-8 bytes). For ASCII
-;; the two agree, and `kura.hash/key32` asserts ASCII — but `admit` calls
-;; `signing-bytes` and hands the result straight to `verify-fn` with no such
-;; assertion, so a non-ASCII node-id, shard-id or nonce produces three
-;; different framings on three hosts. The delimiter argument ("no two distinct
-;; orders can serialise the same way by shifting a delimiter into a field")
-;; also only holds when the count and the field are in the same unit.
+;; NOTE on the `.cljc`, recorded and still NOT fixed — but now pinned by a
+;; test rather than left in this comment. `signing-bytes` there length-delimits
+;; with `(count s)`, a UTF-16 character count on the JVM and a code-unit count
+;; in ClojureScript, while this port uses `string-length` (an alias of
+;; `string-byte-length`, UTF-8 bytes). For ASCII the two agree, and
+;; `kura.hash/key32` asserts ASCII — but `admit` calls `signing-bytes` and
+;; hands the result straight to `verify-fn` with no such assertion, so a
+;; non-ASCII node-id, shard-id or nonce frames differently on every host. The
+;; delimiter argument ("no two distinct orders can serialise the same way by
+;; shifting a delimiter into a field") only holds when the count and the field
+;; are in the same unit, so the byte count is the right one and this is a
+;; defect rather than a formatting choice.
+;;
+;; `kura.kotoba-oracle-test/the-host-and-the-port-frame-non-ascii-differently`
+;; states both answers, so whichever side moves first, someone has to decide
+;; which framing the wire contract has.
+;;
+;; Why `signing-bytes` alone did not become the thing that RUNS, while every
+;; judgement below did (measured 2026-08-12): it is the only export here that
+;; formats an integer, so it is the only one that reaches the compiler's
+;; `__kotoba_string_from_i64`, whose body is
+;; `(string-substring "0123456789" n (+ n 1))`. At the pinned interpreter
+;; `utf8-substring!` guards with `(integer? start)`, which is false for the
+;; `js/BigInt` an `:i64` is under ClojureScript — so a delegated
+;; `signing-bytes` throws there and works on the JVM. The interpreter that
+;; fixes it comes only with a compiler that rejects this file (`string=?`
+;; returns `:bool` there, `:i64` here). Delegating it on one runtime only
+;; would put the rule back in two places on purpose.
 ;;
 ;; Native AOT: `signing-bytes` takes a 7-field record with `:string` fields,
 ;; and `kotoba.kir`'s native admission gate restricts record fields to

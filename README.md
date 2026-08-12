@@ -121,17 +121,46 @@ contradicting the published root.
 
 ## The `.kotoba` port
 
-Three modules under `kotoba/`, all `kotoba/pure` (no capabilities), each a
-second independent implementation held to **equality** with the `.cljc` by a
-gate that compiles it through `kotoba-lang/compiler` and runs it on the KIR
-interpreter in the same JVM. The `.cljc` is unchanged and stays what consumers
-load; the port is the second opinion, not a replacement.
+Three modules under `kotoba/`, all `kotoba/pure` (no capabilities). **One of
+them is what runs; two are second opinions.** That distinction is the whole
+point of [ADR-2608112100](https://github.com/com-junkawasaki/root/blob/main/90-docs/adr/2608112100-a-kotoba-core-with-a-parity-test-is-not-done.edn):
+a port bound to the `.cljc` by a parity test is two implementations, and the
+measure of a port is whether the authority moved, not how many host lines went
+away.
 
-| module | what it holds | gate |
+| module | what it holds | status |
 |---|---|---|
-| `kura_core.kotoba` | the placement **arithmetic** — mix32, FNV-1a, rendezvous scoring, `group-of`, the audit sample bound | `kura.kotoba-parity-test` |
-| `placement_core.kotoba` | the placement **decisions** — `group-name`, the domain and availability caps, and what a finished selection reports | `kura.kotoba-decision-parity-test` |
-| `order_core.kotoba` | the order **contract and admission** — `signing-bytes`, the settlement leaf id, the clock and limit checks, and `admit`'s rule that the signature check comes last and is skipped when the order is already rejected | `kura.kotoba-decision-parity-test` |
+| `order_core.kotoba` | the order **contract and admission** — `signing-bytes`, the settlement leaf id, the closed action set, the clock and limit checks, and `admit`'s rule that the signature check comes last and is skipped when the order is already rejected | **its judgements run.** Shipped as `resources/kura/oracle/order.kir.edn`, executed by `kura.kotoba-oracle`; gated by `kura.kotoba-oracle-test` (drift + delegation) and still by `kura.kotoba-decision-parity-test`. `signing-bytes` is the exception — see below |
+| `kura_core.kotoba` | the placement **arithmetic** — mix32, FNV-1a, rendezvous scoring, `group-of`, the audit sample bound | second opinion, `kura.kotoba-parity-test` |
+| `placement_core.kotoba` | the placement **decisions** — `group-name`, the domain and availability caps, and what a finished selection reports | second opinion, `kura.kotoba-decision-parity-test` |
+
+Regenerate the shipped artifact with `clojure -M:test:gen`. The compiler stays
+test-only — it produced the artifact and never reaches a consumer; the KIR
+interpreter is the one runtime dependency the delegation added.
+
+Two consequences of `order_core.kotoba`'s judgements running, rather than
+being compared against:
+
+- **A ClojureScript host must `kura.kotoba-oracle/register-kir!`** before
+  `admit`, `within-limit?` or `settlement-leaf` will answer; there is no
+  classpath to read the artifact from. `kura.cljs-runner` shows the one line.
+- **`signing-bytes` stayed on the host, and the reason is measured rather than
+  a preference.** It is the only export that formats an integer, so it is the
+  only one that reaches the compiler-synthesised `__kotoba_string_from_i64`,
+  whose body is a `string-substring`. At the pinned interpreter that guard is
+  `(integer? start)` — false for the `js/BigInt` an `:i64` is under
+  ClojureScript — so a delegated `signing-bytes` throws there and works on the
+  JVM. The interpreter that fixes it comes only with a compiler that rejects
+  this repo's own source (`string=?` returns `:bool` there, `:i64` here), so
+  the fix is a language migration of all three cores and their parity tests,
+  and it is a slice of its own. Delegating on one runtime only would put the
+  rule back in two places on purpose.
+
+  The divergence that leaves in place is pinned by
+  `kura.kotoba-oracle-test/the-host-and-the-port-frame-non-ascii-differently`:
+  the host counts UTF-16 units, the port counts UTF-8 bytes, and they disagree
+  for a non-ASCII node-id, shard-id or nonce. ASCII — every id `kura.hash` will
+  key on — agrees.
 
 What stayed on the `.cljc` side is written down in each module's header: folds
 over collections (`ranked`, `select`'s walk, `admit`'s reason vector), the
@@ -170,8 +199,11 @@ clojure -M:lint
 
 ## Dependencies
 
-`erasure` and `merkle-sum` at runtime, both reuse rather than reinvention.
-`kotoba-lang/compiler` is test-only, for the parity gate.
+`erasure`, `merkle-sum` and `kotoba-kir` at runtime — the first two reuse
+rather than reinvention, the third because `kotoba/order_core.kotoba` is what
+`kura.order` executes. `kotoba-lang/compiler` is test-only: it produces the
+shipped KIR (`clojure -M:test:gen`) and drives the parity gates, and never
+reaches a consumer.
 
 ## License
 
