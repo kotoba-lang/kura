@@ -1,0 +1,196 @@
+(ns order-core
+  (:export [field-part signing-head signing-tail signing-bytes
+            settlement-leaf-id
+            known-action? expired? not-yet-valid? within-limit?
+            signature-check-needed? admit-ok?]))
+
+;; The `.kotoba` port of the *decisions* in `kura.order`: the canonical bytes
+;; an order's signature covers, and the yes/no answers a node gives before it
+;; spends a shard's worth of bandwidth or an invoice line on somebody else's
+;; traffic.
+;;
+;; Why this belongs in a second implementation at all. `signing-bytes` is a
+;; wire contract — "a verifier that reassembles it differently verifies a
+;; different statement". The failure it guards against is not a crash but a
+;; silent one: a coordinator signs one string, a guest reconstructs another,
+;; and every honest order is rejected (or, worse, a length-delimiter shifts
+;; and two distinct orders serialise the same). Holding two implementations
+;; byte-equal is the only check that catches it.
+;;
+;; The `.cljc` is unchanged and stays the implementation consumers load;
+;; `kura.kotoba-decision-parity-test` pins these against it.
+;;
+;; What deliberately did NOT cross, and why:
+;;
+;;   `order`             — a map constructor, no decision.
+;;   `admit`'s reason
+;;   collection          — it builds a *vector of reason maps* ("every reason,
+;;                         not the first"), each carrying the offending value.
+;;                         A growable vector of heterogeneous maps is outside
+;;                         this profile, and flattening it to a first-reason
+;;                         keyword would delete the property the docstring
+;;                         says is worth having. What crossed is `admit`'s two
+;;                         structural decisions, which is where the security
+;;                         argument actually lives: `signature-check-needed?`
+;;                         (the crypto is last and skipped when the order is
+;;                         already rejected on its contents) and `admit-ok?`.
+;;   the nil guards      — `(some? expires-at)`, `(some? now)`,
+;;                         `(some? max-bytes)`. This profile has no nil, so
+;;                         presence is the host's question and the ordering
+;;                         comparison is the guest's.
+;;   `verify-fn`         — injected crypto. It stays injected; the guest
+;;                         decides only whether it is called and how its
+;;                         answer combines.
+;;   `settlement-leaf`   — the leaf map itself is host-side (`:hash` is an
+;;                         externally supplied digest); its `:id`, which is the
+;;                         string settlement dedupes and orders on, is here.
+;;   `order-id`          — `mix32(fnv1a(signing-bytes))`. Both halves exist:
+;;                         `signing-bytes` is below and `fnv-step`/`mix32` are
+;;                         in `kotoba/kura_core.kotoba`. It did not cross for
+;;                         two measured reasons. (1) The single-file parity
+;;                         harness compiles one module at a time with no
+;;                         cross-module require, so composing them would mean
+;;                         a *second* copy of the mixer — precisely the
+;;                         two-implementations-drifting problem the gate
+;;                         exists to prevent. (2) The only byte-walk head,
+;;                         `string-code-point-at`, is O(byte-offset) in the
+;;                         reference interpreter, so walking an n-byte string
+;;                         is O(n^2).
+;;
+;; NOTE on the `.cljc`, recorded and NOT fixed in this slice: `signing-bytes`
+;; length-delimits with `(count s)`, which on the JVM is a UTF-16 *character*
+;; count and in ClojureScript a UTF-16 code-unit count, while this port uses
+;; `string-length` (an alias of `string-byte-length`, UTF-8 bytes). For ASCII
+;; the two agree, and `kura.hash/key32` asserts ASCII — but `admit` calls
+;; `signing-bytes` and hands the result straight to `verify-fn` with no such
+;; assertion, so a non-ASCII node-id, shard-id or nonce produces three
+;; different framings on three hosts. The delimiter argument ("no two distinct
+;; orders can serialise the same way by shifting a delimiter into a field")
+;; also only holds when the count and the field are in the same unit.
+;;
+;; Native AOT: `signing-bytes` takes a 7-field record with `:string` fields,
+;; and `kotoba.kir`'s native admission gate restricts record fields to
+;; `#{:i64 :bool}` — so this module as a whole does not clear the gate. Every
+;; other function here is `:i64`/`:string` in and out. The parity test asserts
+;; both facts rather than claiming them.
+
+;; --- the canonical signing string -----------------------------------------
+
+(defn field-part [s :string] :string
+  ;; One length-delimited component. Every field is delimited so that no two
+  ;; distinct orders can serialise the same way by shifting a delimiter into a
+  ;; field — which is only true while the length and the field are counted in
+  ;; the same unit; see the NOTE above.
+  (string-join ":" (string-from-i64 (string-length s)) s))
+
+(defn signing-head [node-id :string action :string shard-id :string] :string
+  ;; Version tag then the three identifying fields, in this order. Field order
+  ;; is part of the wire contract, not a formatting choice.
+  ;;
+  ;; Split from `signing-tail` because this profile caps a function at 5
+  ;; parameters and the statement has 7 fields; `signing-bytes` below joins
+  ;; them and is the whole contract in one call.
+  (string-join "" "kura-order-v1|"
+               (field-part node-id)
+               (field-part action)
+               (field-part shard-id)))
+
+(defn signing-tail [max-bytes :i64 expires-at :i64 issued-at :i64
+                    nonce :string] :string
+  ;; The limit, the two times, the nonce. The integers are printed with
+  ;; `string-from-i64` (signed decimal, no leading zeros, "-" for negatives),
+  ;; which is what the `.cljc`'s `(str x)` produces for a Clojure integer.
+  (string-join "" (field-part (string-from-i64 max-bytes))
+               (field-part (string-from-i64 expires-at))
+               (field-part (string-from-i64 issued-at))
+               (field-part nonce)))
+
+;; The one place the 7-field statement exists as a single value. The
+;; descriptor is repeated on every `record-get` because this profile has no
+;; way to name it: `:schemas` + `[:ref :order/unsigned]` is accepted in a
+;; PARAMETER position but rejected inside `record-get` ("record field must be
+;; a declared keyword literal"), so the full literal is the only form that
+;; works in both. Written on one line each so that the seven copies can be
+;; diffed against each other by eye — a typo in one field list here is the
+;; failure mode this repetition creates.
+(defn signing-bytes
+  [o [:record :order/unsigned [[:node-id :string] [:action :string] [:shard-id :string] [:max-bytes :i64] [:expires-at :i64] [:issued-at :i64] [:nonce :string]]]] :string
+  ;; The full statement. The record exists only because the contract has 7
+  ;; fields and the parameter ceiling is 5; the field ORDER in the descriptor
+  ;; is decorative, the order of the calls below is the contract.
+  ;;
+  ;; `:action` arrives already as its name — the `.cljc` does
+  ;; `(name (or action :nil))`, so a nil action serialises as the three bytes
+  ;; "nil" and the host is the one that knows that.
+  (string-concat
+   (signing-head
+    (record-get [:record :order/unsigned [[:node-id :string] [:action :string] [:shard-id :string] [:max-bytes :i64] [:expires-at :i64] [:issued-at :i64] [:nonce :string]]] o :node-id)
+    (record-get [:record :order/unsigned [[:node-id :string] [:action :string] [:shard-id :string] [:max-bytes :i64] [:expires-at :i64] [:issued-at :i64] [:nonce :string]]] o :action)
+    (record-get [:record :order/unsigned [[:node-id :string] [:action :string] [:shard-id :string] [:max-bytes :i64] [:expires-at :i64] [:issued-at :i64] [:nonce :string]]] o :shard-id))
+   (signing-tail
+    (record-get [:record :order/unsigned [[:node-id :string] [:action :string] [:shard-id :string] [:max-bytes :i64] [:expires-at :i64] [:issued-at :i64] [:nonce :string]]] o :max-bytes)
+    (record-get [:record :order/unsigned [[:node-id :string] [:action :string] [:shard-id :string] [:max-bytes :i64] [:expires-at :i64] [:issued-at :i64] [:nonce :string]]] o :expires-at)
+    (record-get [:record :order/unsigned [[:node-id :string] [:action :string] [:shard-id :string] [:max-bytes :i64] [:expires-at :i64] [:issued-at :i64] [:nonce :string]]] o :issued-at)
+    (record-get [:record :order/unsigned [[:node-id :string] [:action :string] [:shard-id :string] [:max-bytes :i64] [:expires-at :i64] [:issued-at :i64] [:nonce :string]]] o :nonce))))
+
+(defn settlement-leaf-id [node-id :string nonce :string] :string
+  ;; What settlement dedupes and orders leaves on. The nonce is what makes two
+  ;; otherwise identical orders distinguishable, so a replayed settled order is
+  ;; detectable at settlement and not only at admission — which requires this
+  ;; id to be built the same way by the node claiming and the coordinator
+  ;; paying.
+  (string-join "|" node-id nonce))
+
+;; --- admission ------------------------------------------------------------
+
+(defn known-action? [action :string] :i64
+  ;; The closed set an order may authorise. `:repair-get` is separate from
+  ;; `:get` on purpose: it is paid differently and must not be usable to serve
+  ;; a client read.
+  ;;
+  ;; `string=?` returns 1/0, NOT `:bool` — declaring this `:bool` would be
+  ;; rejected, and (worse) a `:bool`-shaped mental model of it silently
+  ;; inverts nothing but reads as if it could.
+  (or (string=? action "put")
+      (string=? action "get")
+      (string=? action "delete")
+      (string=? action "repair-get")
+      (string=? action "audit-get")))
+
+(defn expired? [expires-at :i64 now :i64 skew :i64] :i64
+  ;; Strictly after, so an order is still good at exactly its expiry and at
+  ;; exactly expiry+skew. The skew exists because nodes and coordinators do
+  ;; not share a clock and a node that trusts its own to the second rejects
+  ;; work it was legitimately given. It cuts one way only — see
+  ;; `not-yet-valid?`, which has no skew term.
+  (> now (+ expires-at skew)))
+
+(defn not-yet-valid? [issued-at :i64 now :i64] :i64
+  ;; An order is never honoured *before* it exists, with no tolerance. The
+  ;; asymmetry with `expired?` is the whole clock-skew policy.
+  (< now issued-at))
+
+(defn within-limit? [max-bytes :i64 transferred :i64 n :i64] :i64
+  ;; Whether transferring `n` MORE bytes stays inside what the order allows.
+  ;; The limit is checked against the running total, not once at the start:
+  ;; the client controls how much it sends, so a node that checks once and
+  ;; then streams has not checked. Inclusive — transferring exactly
+  ;; `max-bytes` is allowed.
+  (<= (+ transferred n) max-bytes))
+
+(defn signature-check-needed? [content-problems :i64
+                               verifier-present :i64] :i64
+  ;; Whether this node performs asymmetric crypto on this order. That is not
+  ;; an optimisation: it is the reason a node under a flood of malformed
+  ;; orders does no signature verification on any of them. The crypto runs
+  ;; only when the order is internally coherent AND a verifier is configured.
+  (and (= 0 content-problems) verifier-present))
+
+(defn admit-ok? [content-problems :i64 verifier-present :i64
+                 signature-valid :i64] :i64
+  ;; The order may be acted on only if it survived every content check, a
+  ;; verifier was configured, and that verifier accepted the signature over
+  ;; `signing-bytes`. An accepted order is a claim on money, so this is the
+  ;; last thing between a coordinator's signature and an invoice.
+  (and (signature-check-needed? content-problems verifier-present)
+       signature-valid))

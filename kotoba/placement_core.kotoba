@@ -1,0 +1,118 @@
+(ns placement-core
+  (:export [group-name
+            domain-cap-exceeded? intermittent-cap-exceeded? would-exceed?
+            select-complete? select-shortfall]))
+
+;; The `.kotoba` port of the *decisions* in `kura.placement` that are not
+;; already in `kotoba/kura_core.kotoba` — the group name a placement is keyed
+;; on, and the four yes/no-and-how-many answers that decide whether a
+;; candidate node may take a shard and whether the resulting group is honest
+;; about being short.
+;;
+;; `kura_core.kotoba` holds the arithmetic (mix32 / FNV / rendezvous scoring /
+;; group-of). This holds the judgements built on top of it. Both are held to
+;; the live `.cljc` by `kura.kotoba-decision-parity-test`; the `.cljc` is
+;; unchanged and stays the implementation consumers load.
+;;
+;; What deliberately did NOT cross, and why:
+;;
+;;   `score` / `ranked`   — a fold over a node's virtual ids and then a sort of
+;;                          the whole node set. The per-draw arithmetic is
+;;                          already `kura-core/best-score`; ordering a
+;;                          collection is not a decision this profile can hold.
+;;   `select`             — the greedy walk itself. It folds a ranked sequence
+;;                          and carries an accumulating set. What it *decides*
+;;                          at each step is `would-exceed?`, and what it
+;;                          *reports* at the end is `select-complete?` /
+;;                          `select-shortfall`; both are here.
+;;   `would-exceed?`'s
+;;   domain scan          — `(some (fn [[kind cap]] ...) caps)` walks a map of
+;;                          arbitrarily many domain kinds and counts, per kind,
+;;                          how many already-chosen nodes share the candidate's
+;;                          value. The counting is the host's; the comparison
+;;                          that turns a count into a refusal is
+;;                          `domain-cap-exceeded?`, and the host ORs those per-
+;;                          kind answers into `would-exceed?`'s last argument.
+;;                          `caps` can hold more than `max-typed-map-entries`
+;;                          (31) kinds, so it is not expressible as one guest
+;;                          map even in principle.
+;;   `node` / `policy`    — constructors whose whole content is `assert`, and
+;;                          this profile has no `throw` (a permanent safety
+;;                          invariant, not a gap). Signalling stays host-side.
+;;   `assign`             — `map-indexed` over the selected nodes; shard i to
+;;                          the i-th node is the identity function, not a
+;;                          decision.
+;;   `placement` /
+;;   `groups-touching` /
+;;   `churn`              — orchestration and set difference over collections.
+;;
+;; Native AOT: every function here is `:i64`/`:string` in and out, which is
+;; exactly what `kotoba.kir/only-native-word-typed-features?` admits, and
+;; `kura.kotoba-decision-parity-test/placement-core-is-native-qualifiable`
+;; asserts it by running that gate rather than claiming it.
+
+;; --- group naming ---------------------------------------------------------
+
+(defn group-name [i :i64] :string
+  ;; Canonical name of group `i` — the string `select` is keyed on, and hence
+  ;; the string whose `key32` decides which nodes win the group. A host that
+  ;; builds this differently computes a different placement for the same
+  ;; object, which is the one failure this whole port exists to make
+  ;; impossible. Named rather than numbered so adjacent groups do not get
+  ;; adjacent placement keys.
+  (string-concat "pg-" (string-from-i64 i)))
+
+;; --- domain constraints ---------------------------------------------------
+
+(defn domain-cap-exceeded? [shared :i64 cap :i64] :i64
+  ;; `shared` is how many already-chosen nodes carry the candidate's value for
+  ;; one domain kind; `cap` is that kind's ceiling. `>=` and not `>`: the cap
+  ;; is the number allowed to share a value, so the (cap+1)-th is the one
+  ;; refused. Off by one here and a `{:rack 7}` policy silently admits eight
+  ;; shards to a rack that the code can only survive seven of.
+  ;;
+  ;; Returns 1/0, not `:bool`: every comparison in this profile is `:i64`.
+  (>= shared cap))
+
+(defn intermittent-cap-exceeded? [candidate-intermittent :i64
+                                  chosen-intermittent :i64
+                                  max-intermittent :i64] :i64
+  ;; Deliberately asymmetric, and this is the point of the check rather than
+  ;; an accident of it: `:always-on` is uncapped, only `:intermittent` counts.
+  ;; Capping both would cap rented buckets at the same small number as
+  ;; laptops, and rented buckets are the always-on floor the arrangement
+  ;; stands on. `candidate-intermittent` is 1 exactly when the candidate
+  ;; declared `:intermittent`.
+  (and candidate-intermittent (>= chosen-intermittent max-intermittent)))
+
+(defn would-exceed? [candidate-intermittent :i64
+                     chosen-intermittent :i64
+                     max-intermittent :i64
+                     any-domain-cap-exceeded :i64] :i64
+  ;; The composition: a candidate is refused if it would break the
+  ;; availability cap OR any domain cap. `any-domain-cap-exceeded` is the host
+  ;; folding `domain-cap-exceeded?` over the policy's kinds — see the header
+  ;; for why that fold cannot be a guest map.
+  (or (intermittent-cap-exceeded? candidate-intermittent
+                                  chosen-intermittent
+                                  max-intermittent)
+      any-domain-cap-exceeded))
+
+;; --- what a finished selection reports ------------------------------------
+
+(defn select-complete? [n :i64 chosen :i64] :i64
+  ;; A group is complete only at exactly `n`. Not `>=`: the walk stops at `n`,
+  ;; so more than `n` would mean the walk itself was wrong, and reporting that
+  ;; as complete would hide it.
+  (= n chosen))
+
+(defn select-shortfall [n :i64 chosen :i64] :i64
+  ;; How many shards the group is short. Underfill is reported, not hidden: a
+  ;; greedy walk under caps can run out of eligible nodes even when there were
+  ;; enough nodes to begin with, and a caller that silently accepts n-2 shards
+  ;; has silently accepted a different durability than it asked for.
+  ;;
+  ;; The floor at zero is `(max 0 (- n chosen))` in the `.cljc`; this profile
+  ;; has no `max`, and `(if (< n chosen) 0 (- n chosen))` is the same
+  ;; function, including at `n = chosen`.
+  (if (< n chosen) 0 (- n chosen)))

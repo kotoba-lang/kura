@@ -4,10 +4,13 @@
 
     clojure -M:cljs -m cljs.main --target node -m kura.cljs-runner
 
-  `kura.kotoba-parity-test` is absent: it needs kotoba-lang/compiler, which is
-  JVM-only. The placement arithmetic it gates is exercised here too, against
-  the second host — which is its own kind of parity check, since `kura.hash`
-  is the one namespace where clj and cljs disagree about 32-bit arithmetic."
+  The `.kotoba` parity gates (`kura.kotoba-parity-test`,
+  `kura.kotoba-decision-parity-test`) are absent: they need
+  kotoba-lang/compiler, which is JVM-only. What they gate — the placement
+  arithmetic, the cap decisions, the order signing string — is exercised here
+  too through the `.cljc` itself, against the second host, which is its own
+  kind of parity check: `kura.hash` is the one namespace where clj and cljs
+  disagree about 32-bit arithmetic."
   (:require [clojure.test :as t :refer [run-tests]]
             [kura.audit-test]
             [kura.manifest-test]
