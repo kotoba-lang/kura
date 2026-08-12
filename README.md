@@ -121,10 +121,29 @@ contradicting the published root.
 
 ## The `.kotoba` port
 
-`kotoba/kura_core.kotoba` (`kotoba/pure`, no capabilities) is a second
-independent implementation of the placement arithmetic, held to **equality** by
-`kura.kotoba-parity-test`, which compiles it through `kotoba-lang/compiler` and
-runs it on the KIR interpreter in the same JVM.
+Three modules under `kotoba/`, all `kotoba/pure` (no capabilities), each a
+second independent implementation held to **equality** with the `.cljc` by a
+gate that compiles it through `kotoba-lang/compiler` and runs it on the KIR
+interpreter in the same JVM. The `.cljc` is unchanged and stays what consumers
+load; the port is the second opinion, not a replacement.
+
+| module | what it holds | gate |
+|---|---|---|
+| `kura_core.kotoba` | the placement **arithmetic** — mix32, FNV-1a, rendezvous scoring, `group-of`, the audit sample bound | `kura.kotoba-parity-test` |
+| `placement_core.kotoba` | the placement **decisions** — `group-name`, the domain and availability caps, and what a finished selection reports | `kura.kotoba-decision-parity-test` |
+| `order_core.kotoba` | the order **contract and admission** — `signing-bytes`, the settlement leaf id, the clock and limit checks, and `admit`'s rule that the signature check comes last and is skipped when the order is already rejected | `kura.kotoba-decision-parity-test` |
+
+What stayed on the `.cljc` side is written down in each module's header: folds
+over collections (`ranked`, `select`'s walk, `admit`'s reason vector), the
+`assert`s (this profile has no `throw`, deliberately), and the nil guards
+(there is no nil). Each port function takes already-resolved scalars and
+returns one decision.
+
+`placement_core.kotoba` clears `kotoba.kir/only-native-word-typed-features?`,
+the admission gate behind the x86-64 and aarch64 AOT backends;
+`order_core.kotoba` does not, because `signing-bytes` needs a record with
+`:string` fields and native records are restricted to `#{:i64 :bool}`. Both
+facts are asserted by running the gate, not claimed.
 
 Placement is the one thing here that cannot take its arithmetic by injection: a
 client, a coordinator and an auditor must independently compute the same node

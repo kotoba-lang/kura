@@ -10,34 +10,19 @@
 
   Same harness as `erasure.kotoba-parity-test`: compile the port with a
   generated zero-arg probe per case, run it on the KIR interpreter in this
-  JVM, compare integers. No marshalling, no runtime boundary."
-  (:require [clojure.string :as str]
-            [clojure.test :refer [deftest is testing]]
+  JVM, compare integers. No marshalling, no runtime boundary. The harness
+  itself now lives in `kura.kotoba-harness`, shared with
+  `kura.kotoba-decision-parity-test`."
+  (:require [clojure.test :refer [deftest is testing]]
             [kura.audit :as audit]
             [kura.hash :as h]
-            [kura.placement :as p]
-            [kotoba.compiler.core :as compiler]
-            [kotoba.kir :as ir]))
+            [kura.kotoba-harness :as harness]
+            [kura.placement :as p]))
 
 (def ^:private port-path "kotoba/kura_core.kotoba")
 
-(defn- strip-ns-form [src]
-  (let [start (str/index-of src "(ns ")]
-    (loop [i start depth 0]
-      (let [c (.charAt ^String src i)
-            depth (cond (= c \() (inc depth) (= c \)) (dec depth) :else depth)]
-        (if (and (zero? depth) (> i start))
-          (subs src (inc i))
-          (recur (inc i) depth))))))
-
 (defn- run-cases [cases]
-  (let [names (sort (keys cases))
-        probes (map (fn [n] (str "(defn " n " [] :i64 " (get cases n) ")")) names)
-        src (str "(ns kura-core (:export [" (str/join " " names) "]))\n"
-                 (strip-ns-form (slurp port-path)) "\n"
-                 (str/join "\n" probes))
-        kir (:kir (compiler/compile-source src :wasm32-kotoba-v1 {}))]
-    (into {} (map (fn [n] [n (ir/execute kir (symbol n) [])])) names)))
+  (harness/run-cases port-path "kura-core" cases))
 
 (def ^:private mix-corpus
   (concat [0 1 2 255 256 65535 65536 2147483647 2147483648 4294967295]
