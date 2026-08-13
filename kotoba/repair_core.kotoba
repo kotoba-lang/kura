@@ -1,0 +1,43 @@
+(ns repair-core
+  (:export [margin readable-rank local-rank]))
+
+;; The scalar decisions behind `kura.repair`'s queue order.
+;;
+;; `margin` is the number of FURTHER arbitrary losses a group is GUARANTEED to
+;; survive, floored at zero. It is a lower bound on purpose: the code tolerates
+;; any `tolerated` erasures, so with `e` already gone another `tolerated - e`
+;; are decodable whichever shards they hit. `exact-margin` in the `.cljc` can
+;; do better for a specific pattern, and scheduling on that optimistic figure
+;; would mean betting a group's durability on which shards die next.
+;;
+;; `readable-rank` and `local-rank` are the other two components of the
+;; `urgency` sort key: unreadable groups sort first because they are already a
+;; durability event rather than a risk, and groups with more locally-repairable
+;; losses sort earlier because clearing the cheap ones frees the bandwidth the
+;; global rebuilds need.
+;;
+;; What stays .cljc: reading the layout, counting the erased set, filtering the
+;; plan's steps for :local, and assembling the three-element sort vector.
+;; Nothing here throws.
+;;
+;; Ported by poolside/laguna-s-2.1 through kotoba-code's scripts/orbench
+;; (1 round, 52s, 112 output tokens) and gated by kotoba -M inspect / -M test
+;; (jvm-kir, js, wasm) / aarch64 native, plus
+;; test/kura/kotoba_repair_parity_test.clj.
+;;
+;; The aarch64 AOT target compiles this module; the KIR predicate
+;; `only-native-word-typed-features?` rejects it, because of the bare `:bool`
+;; parameter on `readable-rank` (compiler ADR 0219 puts that gap in the
+;; interpreter, not in either backend). Both facts are pinned by the parity
+;; test rather than asserted here.
+
+(defn margin [tolerated :i64 erased-count :i64] :i64
+  (if (> (- tolerated erased-count) 0)
+    (- tolerated erased-count)
+    0))
+
+(defn readable-rank [readable :bool] :i64
+  (if readable 1 0))
+
+(defn local-rank [local-steps :i64] :i64
+  (- local-steps))
