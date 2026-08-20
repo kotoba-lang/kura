@@ -15,7 +15,7 @@
  ;;                never reaches a consumer.
  ;;
  ;;                Pinned to the kir the pinned compiler emits for
- ;;                (`io.github.kotoba-lang/compiler` 45f0e5e3 declares
+ ;;                (`io.github.kotoba-lang/amu` 45f0e5e3 declares
  ;;                kotoba-kir fa2fbb58). **They move together or not at all.**
  ;;                KIR is a versioned document, and an interpreter reading a
  ;;                shape its emitter did not write is exactly the failure the
@@ -50,13 +50,13 @@
          :git/sha "fa2fbb5839c97b81fb1f6cb61787332bb55f2b9b"}}
  :aliases
  {:test {:extra-paths ["test"]
-         ;; kotoba-lang/compiler is TEST-ONLY: it produces the shipped KIR
+         ;; kotoba-lang/amu is TEST-ONLY: it produces the shipped KIR
          ;; (:gen below) and drives the parity gate over
          ;; kotoba/kura_core.kotoba (ADR-2607299200 section 5).
          :extra-deps {io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}
-                      io.github.kotoba-lang/compiler
-                      {:git/url "https://github.com/kotoba-lang/compiler.git"
+                      io.github.kotoba-lang/amu
+                      {:git/url "https://github.com/kotoba-lang/amu.git"
                        :git/sha "45f0e5e3d633e3fc9d8003396f64422b7566e02b"}}
          :main-opts ["-m" "cognitect.test-runner"]
          :exec-fn cognitect.test-runner.api/test}
