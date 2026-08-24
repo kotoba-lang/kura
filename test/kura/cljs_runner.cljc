@@ -2,7 +2,10 @@
   "Portable suite under a real ClojureScript host (fleet runtime priority puts
   cljs ahead of the JVM).
 
-    clojure -M:cljs -m cljs.main --target node -m kura.cljs-runner
+    clojure -M:cljs -m cljs.main --target node --output-dir target/node-out \\
+      --output-to target/tests.cjs -c kura.cljs-runner
+    echo '{\"type\":\"commonjs\"}' > target/node-out/package.json
+    node target/tests.cjs
 
   The `.kotoba` parity gates (`kura.kotoba-parity-test`,
   `kura.kotoba-decision-parity-test`) are absent: they need
@@ -51,3 +54,9 @@
   (register-shipped-cores!)
   (run-tests 'kura.placement-test 'kura.manifest-test 'kura.repair-test
              'kura.audit-test 'kura.order-test))
+
+;; The compiled node bundle runs `cljs.nodejscli`, which calls whatever
+;; `*main-cli-fn*` names. Without this the bundle loads every namespace,
+;; runs no test, and exits 0 -- measured 2026-08-25, and indistinguishable
+;; from a clean run in both the output and the exit code.
+#?(:cljs (set! *main-cli-fn* -main))
