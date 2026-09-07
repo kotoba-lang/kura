@@ -45,8 +45,8 @@
         io.github.kotoba-lang/merkle-sum
         {:git/url "https://github.com/kotoba-lang/merkle-sum.git"
          :git/sha "5bb473aed0c0bba6c0ae758d000a6142a5d79891"}
-        io.github.kotoba-lang/kotoba-kir
-        {:git/url "https://github.com/kotoba-lang/kotoba-kir.git"
+        io.github.kotoba-lang/osaho
+        {:git/url "https://github.com/kotoba-lang/osaho.git"
          :git/sha "fa2fbb5839c97b81fb1f6cb61787332bb55f2b9b"}}
  :aliases
  {:test {:extra-paths ["test"]
