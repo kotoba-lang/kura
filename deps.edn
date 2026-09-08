@@ -39,7 +39,12 @@
  ;;                false — so every core that formats an integer into a string
  ;;                throws there and not on the JVM. `kura.cljs-runner` is what
  ;;                caught it; a green JVM suite would not have.
- :deps {io.github.kotoba-lang/erasure
+ :deps {
+        ;; kotoba.lang.text, not clojure.string. Pinned as an explicit floor:
+        ;; tools.deps takes the NEWEST sha it is shown, so without a floor here
+        ;; this repo silently rides whatever a sibling happens to name.
+        io.github.kotoba-lang/text {:git/sha "73bdb13ae7a3d004b44bca08be03a3191157a38f"}
+       io.github.kotoba-lang/erasure
         {:git/url "https://github.com/kotoba-lang/erasure.git"
          :git/sha "6b6b95eb8f5733b468e569c59eb58b492e6dc08b"}
         io.github.kotoba-lang/merkle-sum

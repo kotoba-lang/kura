@@ -13,7 +13,7 @@
   `name -> [return-type expr-string]`. Case names must not collide with the
   port's own function names: the generated export list would then contain a
   name twice and the compiler rejects it as not unique."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [kotoba.compiler.core :as compiler]
             [kotoba.kir :as ir]))
 

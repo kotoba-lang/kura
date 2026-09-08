@@ -15,7 +15,7 @@
   `select`'s reported shortfall) the real function is driven and its own
   output is the oracle, rather than the decision being restated here — a gate
   that compares a port against a copy of itself proves nothing."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [clojure.test :refer [deftest is testing]]
             [kura.kotoba-harness :as harness]
             [kura.order :as o]
