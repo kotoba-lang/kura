@@ -56,7 +56,7 @@
       (let [shipped (edn/read-string (slurp (io/resource (oracle/resource-path id))))
             fresh (:kir (compiler/compile-source (slurp (io/file source)) gen/target {}))]
         (is (= (renumber-gensyms fresh) (renumber-gensyms shipped))
-            (str "shipped KIR for " id " is stale — run `clojure -M:test:gen`"))))))
+            (str "shipped KIR for " id " is stale — run `kbb -M:test:gen`"))))))
 
 (deftest every-declared-core-actually-ships
   (doseq [id (keys oracle/cores)]
