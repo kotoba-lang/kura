@@ -23,7 +23,7 @@
 ;; Ported by poolside/laguna-s-2.1 through kotoba-code's scripts/orbench
 ;; (1 round, 52s, 112 output tokens) and gated by kotoba -M inspect / -M test
 ;; (jvm-kir, js, wasm) / aarch64 native, plus
-;; test/kura/kotoba_repair_parity_test.clj.
+;; test/kura/kotoba_repair_parity_test.cljk.
 ;;
 ;; The aarch64 AOT target compiles this module; the KIR predicate
 ;; `only-native-word-typed-features?` rejects it, because of the bare `:bool`
