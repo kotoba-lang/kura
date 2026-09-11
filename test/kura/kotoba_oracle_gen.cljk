@@ -1,7 +1,7 @@
 (ns kura.kotoba-oracle-gen
   "Regenerate the shipped KIR from the ports under `kotoba/`.
 
-      clojure -M:test:gen
+      kbb -M:test:gen
 
   Runs under :test because the compiler lives there and must not reach the
   library. What it writes IS what a consumer loads, so nothing here transforms

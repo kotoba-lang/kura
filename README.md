@@ -134,7 +134,7 @@ away.
 | `kura_core.kotoba` | the placement **arithmetic** — mix32, FNV-1a, rendezvous scoring, `group-of`, the audit sample bound | second opinion, `kura.kotoba-parity-test` |
 | `placement_core.kotoba` | the placement **decisions** — `group-name`, the domain and availability caps, and what a finished selection reports | second opinion, `kura.kotoba-decision-parity-test` |
 
-Regenerate the shipped artifact with `clojure -M:test:gen`. The compiler stays
+Regenerate the shipped artifact with `kbb -M:test:gen`. The compiler stays
 test-only — it produced the artifact and never reaches a consumer; the KIR
 interpreter is the one runtime dependency the delegation added.
 
@@ -192,9 +192,9 @@ through `u32`. All three implementations agree: `key32 "pg-0" = 3505442236`.
 ## Tests
 
 ```bash
-clojure -M:test                                        # JVM, includes the parity gate
-clojure -M:cljs -m cljs.main --target node -m kura.cljs-runner
-clojure -M:lint
+kbb -M:test                                        # JVM, includes the parity gate
+kbb -M:cljs -m cljs.main --target node -m kura.cljs-runner
+kbb -M:lint
 ```
 
 ## Dependencies
@@ -202,7 +202,7 @@ clojure -M:lint
 `erasure`, `merkle-sum` and `kotoba-kir` at runtime — the first two reuse
 rather than reinvention, the third because `kotoba/order_core.kotoba` is what
 `kura.order` executes. `kotoba-lang/compiler` is test-only: it produces the
-shipped KIR (`clojure -M:test:gen`) and drives the parity gates, and never
+shipped KIR (`kbb -M:test:gen`) and drives the parity gates, and never
 reaches a consumer.
 
 ## License

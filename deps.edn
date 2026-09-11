@@ -68,10 +68,10 @@
   ;; Regenerate the shipped decision-core KIR. Combine with :test, which is
   ;; where the compiler lives:
   ;;
-  ;;   clojure -M:test:gen
+  ;;   kbb -M:test:gen
   :gen {:main-opts ["-m" "kura.kotoba-oracle-gen"]}
   ;; The portable suite under ClojureScript. The parity gate is JVM-only.
-  ;;   clojure -M:cljs -m cljs.main --target node -m kura.cljs-runner
+  ;;   kbb -M:cljs -m cljs.main --target node -m kura.cljs-runner
   :cljs {:extra-paths ["test"]
          :extra-deps {org.clojure/clojurescript {:mvn/version "1.11.132"}}}
   :lint {:replace-deps {clj-kondo/clj-kondo {:mvn/version "2024.11.14"}}
