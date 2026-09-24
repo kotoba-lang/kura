@@ -21,7 +21,7 @@
   line any ClojureScript host of `kura.order` now needs (see that namespace's
   boundary note). Reading the shipped file rather than embedding a copy is the
   point: this suite exercises the artifact a JVM consumer would load."
-  (:require [clojure.test :as t :refer [run-tests]]
+  (:require [kotoba.test :as t :refer [run-tests]]
             #?(:cljs [cljs.reader :as reader])
             [kura.kotoba-oracle :as oracle]
             [kura.audit-test]

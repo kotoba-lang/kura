@@ -1,5 +1,5 @@
 (ns kura.repair-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [erasure.lrc :as lrc]
             [kura.placement :as p]
             [kura.repair :as r]))

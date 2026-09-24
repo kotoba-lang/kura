@@ -1,5 +1,5 @@
 (ns kura.placement-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [kura.hash :as h]
             [kura.placement :as p]))
 

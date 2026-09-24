@@ -1,5 +1,5 @@
 (ns kura.audit-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [kura.audit :as a]))
 
 ;; A toy digest. Real deployments inject SHA-256; the tree does not care, and

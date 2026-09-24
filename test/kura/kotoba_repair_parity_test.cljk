@@ -10,7 +10,7 @@
   The oracle is `r/urgency` itself — the real sort key, driven from a real
   `r/assess` over a real layout — rather than a restatement of the rule here.
   A gate that compares a port against a copy of itself proves nothing."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [erasure.lrc :as lrc]
             [kura.kotoba-harness :as harness]
             [kura.repair :as r]))
