@@ -13,7 +13,7 @@
   JVM, compare integers. No marshalling, no runtime boundary. The harness
   itself now lives in `kura.kotoba-harness`, shared with
   `kura.kotoba-decision-parity-test`."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [kura.audit :as audit]
             [kura.hash :as h]
             [kura.kotoba-harness :as harness]

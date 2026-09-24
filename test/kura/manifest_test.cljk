@@ -1,5 +1,5 @@
 (ns kura.manifest-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [erasure.lrc :as lrc]
             [kura.manifest :as m]))
 
